@@ -13,9 +13,44 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR);
 
+// Variable global para el socket de Baileys
+let sock = null;
+
+// Iniciar el servidor Express UNA SOLA VEZ
+app.listen(PORT, () => {
+    console.log(`🌐 API del bot escuchando en puerto ${PORT}`);
+    // Llamar a startBot solo cuando Express ya está escuchando
+    startBot();
+});
+
+// Endpoint para enviar mensajes (sin cambios)
+app.post('/message/sendText/:instance', async (req, res) => {
+    const { number, text } = req.body;
+    if (!number || !text) {
+        return res.status(400).json({ error: 'Faltan number o text' });
+    }
+    if (!sock) {
+        return res.status(503).json({ error: 'WhatsApp no conectado aún' });
+    }
+    try {
+        const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`;
+        await sock.sendMessage(jid, { text });
+        res.json({ status: 200, response: 'enviado' });
+    } catch (e) {
+        console.error('Error enviando mensaje:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    const sock = makeWASocket({
+    
+    // Si ya existía un sock, lo limpiamos (opcional)
+    if (sock) {
+        try { sock.end(); } catch(_) {}
+    }
+    
+    sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
         browser: ['Control-Financiero', 'Chrome', '1.0.0']
@@ -32,7 +67,10 @@ async function startBot() {
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Conexión cerrada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) startBot();
+            if (shouldReconnect) {
+                // Reconectar sin reiniciar Express
+                startBot();
+            }
         }
     });
 
@@ -63,26 +101,4 @@ async function startBot() {
             }
         }
     });
-
-    // Endpoint para enviar mensajes (igual que Evolution)
-    app.post('/message/sendText/:instance', async (req, res) => {
-        const { number, text } = req.body;
-        if (!number || !text) {
-            return res.status(400).json({ error: 'Faltan number o text' });
-        }
-        try {
-            const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`;
-            await sock.sendMessage(jid, { text });
-            res.json({ status: 200, response: 'enviado' });
-        } catch (e) {
-            console.error('Error enviando mensaje:', e.message);
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    app.listen(PORT, () => {
-        console.log(`🌐 API del bot escuchando en puerto ${PORT}`);
-    });
 }
-
-startBot().catch(err => console.error('Error fatal:', err));
