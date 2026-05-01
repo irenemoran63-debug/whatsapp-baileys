@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('baileys');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -14,24 +14,18 @@ const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR);
 
 let sock = null;
-let isConnecting = false;        // Para evitar solapamientos
-let reconnectTimeout = null;     // Para retrasar la reconexión
+let isConnecting = false;
+let reconnectTimeout = null;
 
-// Iniciar el servidor Express UNA SOLA VEZ
 app.listen(PORT, () => {
     console.log(`🌐 API del bot escuchando en puerto ${PORT}`);
     startBot();
 });
 
-// Endpoint para enviar mensajes
 app.post('/message/sendText/:instance', async (req, res) => {
     const { number, text } = req.body;
-    if (!number || !text) {
-        return res.status(400).json({ error: 'Faltan number o text' });
-    }
-    if (!sock) {
-        return res.status(503).json({ error: 'WhatsApp no conectado aún' });
-    }
+    if (!number || !text) return res.status(400).json({ error: 'Faltan number o text' });
+    if (!sock) return res.status(503).json({ error: 'WhatsApp no conectado aún' });
     try {
         const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`;
         await sock.sendMessage(jid, { text });
@@ -43,12 +37,10 @@ app.post('/message/sendText/:instance', async (req, res) => {
 });
 
 async function startBot() {
-    // Evitar múltiples inicios simultáneos
     if (isConnecting) return;
     isConnecting = true;
 
     try {
-        // Limpiar socket previo si existe
         if (sock) {
             try { sock.end(); } catch (_) {}
             sock = null;
@@ -59,7 +51,10 @@ async function startBot() {
         sock = makeWASocket({
             auth: state,
             printQRInTerminal: true,
-            browser: ['Control-Financiero', 'Chrome', '1.0.0']
+            browser: ['Control Financiero', 'Safari', '1.0.0'],  // Identifica como navegador móvil Safari
+            mobile: true,  // Importante: usar perfil móvil para evitar bloqueos temporales
+            connectTimeoutMs: 60_000,  // Esperar hasta 60 segundos para la conexión
+            qrTimeout: 40_000,  // Mostrar QR durante 40 segundos antes de reintentar
         });
 
         sock.ev.on('connection.update', ({ qr, connection, lastDisconnect }) => {
@@ -81,11 +76,9 @@ async function startBot() {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 console.log('🔌 Conexión cerrada. Motivo:', statusCode);
-
                 if (shouldReconnect) {
-                    // Esperar 5 segundos antes de reconectar para evitar bucle
                     console.log('⏳ Reintentando conexión en 5 segundos...');
-                    isConnecting = false; // liberar bandera
+                    isConnecting = false;
                     reconnectTimeout = setTimeout(() => startBot(), 5000);
                 } else {
                     console.log('❌ Sesión cerrada por logout. Deberás escanear un nuevo QR.');
@@ -96,7 +89,6 @@ async function startBot() {
 
         sock.ev.on('creds.update', saveCreds);
 
-        // Reenviar mensajes entrantes al webhook del cerebro
         sock.ev.on('messages.upsert', async (m) => {
             const msg = m.messages[0];
             if (!msg.message || msg.key.fromMe) return;
@@ -125,7 +117,6 @@ async function startBot() {
     } catch (e) {
         console.error('Error fatal en startBot:', e);
         isConnecting = false;
-        // Reintentar después de un tiempo si falla todo
         reconnectTimeout = setTimeout(() => startBot(), 10000);
     }
 }
