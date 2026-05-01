@@ -13,17 +13,17 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR);
 
-// Variable global para el socket de Baileys
 let sock = null;
+let isConnecting = false;        // Para evitar solapamientos
+let reconnectTimeout = null;     // Para retrasar la reconexión
 
 // Iniciar el servidor Express UNA SOLA VEZ
 app.listen(PORT, () => {
     console.log(`🌐 API del bot escuchando en puerto ${PORT}`);
-    // Llamar a startBot solo cuando Express ya está escuchando
     startBot();
 });
 
-// Endpoint para enviar mensajes (sin cambios)
+// Endpoint para enviar mensajes
 app.post('/message/sendText/:instance', async (req, res) => {
     const { number, text } = req.body;
     if (!number || !text) {
@@ -43,62 +43,89 @@ app.post('/message/sendText/:instance', async (req, res) => {
 });
 
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    
-    // Si ya existía un sock, lo limpiamos (opcional)
-    if (sock) {
-        try { sock.end(); } catch(_) {}
+    // Evitar múltiples inicios simultáneos
+    if (isConnecting) return;
+    isConnecting = true;
+
+    try {
+        // Limpiar socket previo si existe
+        if (sock) {
+            try { sock.end(); } catch (_) {}
+            sock = null;
+        }
+
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: true,
+            browser: ['Control-Financiero', 'Chrome', '1.0.0']
+        });
+
+        sock.ev.on('connection.update', ({ qr, connection, lastDisconnect }) => {
+            if (qr) {
+                console.log('🟢 ***** ESCANEA ESTE CÓDIGO QR *****');
+                require('qrcode-terminal').generate(qr, { small: true });
+            }
+
+            if (connection === 'open') {
+                console.log('✅ Conectado a WhatsApp');
+                isConnecting = false;
+                if (reconnectTimeout) {
+                    clearTimeout(reconnectTimeout);
+                    reconnectTimeout = null;
+                }
+            }
+
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                console.log('🔌 Conexión cerrada. Motivo:', statusCode);
+
+                if (shouldReconnect) {
+                    // Esperar 5 segundos antes de reconectar para evitar bucle
+                    console.log('⏳ Reintentando conexión en 5 segundos...');
+                    isConnecting = false; // liberar bandera
+                    reconnectTimeout = setTimeout(() => startBot(), 5000);
+                } else {
+                    console.log('❌ Sesión cerrada por logout. Deberás escanear un nuevo QR.');
+                    isConnecting = false;
+                }
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        // Reenviar mensajes entrantes al webhook del cerebro
+        sock.ev.on('messages.upsert', async (m) => {
+            const msg = m.messages[0];
+            if (!msg.message || msg.key.fromMe) return;
+            if (WEBHOOK_URL) {
+                try {
+                    await fetch(WEBHOOK_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            event: 'messages.upsert',
+                            data: {
+                                key: msg.key,
+                                message: msg.message,
+                                participant: msg.key.participant,
+                                remoteJid: msg.key.remoteJid
+                            }
+                        })
+                    });
+                    console.log('📩 Mensaje reenviado al webhook');
+                } catch (e) {
+                    console.error('Error enviando webhook:', e.message);
+                }
+            }
+        });
+
+    } catch (e) {
+        console.error('Error fatal en startBot:', e);
+        isConnecting = false;
+        // Reintentar después de un tiempo si falla todo
+        reconnectTimeout = setTimeout(() => startBot(), 10000);
     }
-    
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true,
-        browser: ['Control-Financiero', 'Chrome', '1.0.0']
-    });
-
-    sock.ev.on('connection.update', ({ qr, connection, lastDisconnect }) => {
-        if (qr) {
-            console.log('Escanea este QR con tu WhatsApp:');
-            require('qrcode-terminal').generate(qr, { small: true });
-        }
-        if (connection === 'open') {
-            console.log('✅ Conectado a WhatsApp');
-        }
-        if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexión cerrada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) {
-                // Reconectar sin reiniciar Express
-                startBot();
-            }
-        }
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    // Reenviar mensajes entrantes al webhook del cerebro
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
-        if (WEBHOOK_URL) {
-            try {
-                await fetch(WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        event: 'messages.upsert',
-                        data: {
-                            key: msg.key,
-                            message: msg.message,
-                            participant: msg.key.participant,
-                            remoteJid: msg.key.remoteJid
-                        }
-                    })
-                });
-                console.log('Mensaje reenviado al webhook');
-            } catch (e) {
-                console.error('Error enviando webhook:', e.message);
-            }
-        }
-    });
 }
