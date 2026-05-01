@@ -1,4 +1,0 @@
-[volumes]
-[volumes.baileys-session]
-path = "/app/auth_info_baileys"
-size = "1GB"
