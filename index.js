@@ -7,7 +7,6 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
-const AUTH_KEY = process.env.AUTHENTICATION_API_KEY || 'mi_clave_evolution_2024';
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
@@ -15,13 +14,14 @@ if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR);
 
 let sock = null;
 let isConnecting = false;
-let reconnectTimeout = null;
 
+// Iniciar Express UNA SOLA VEZ
 app.listen(PORT, () => {
     console.log(`🌐 API del bot escuchando en puerto ${PORT}`);
     startBot();
 });
 
+// Endpoint para enviar mensajes
 app.post('/message/sendText/:instance', async (req, res) => {
     const { number, text } = req.body;
     if (!number || !text) return res.status(400).json({ error: 'Faltan number o text' });
@@ -41,20 +41,18 @@ async function startBot() {
     isConnecting = true;
 
     try {
-        if (sock) {
-            try { sock.end(); } catch (_) {}
-            sock = null;
-        }
+        // Limpiar socket previo
+        if (sock) { try { sock.end(); } catch(_) {} }
 
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
         sock = makeWASocket({
             auth: state,
             printQRInTerminal: true,
-            browser: ['Control Financiero', 'Safari', '1.0.0'],  // Identifica como navegador móvil Safari
-            mobile: true,  // Importante: usar perfil móvil para evitar bloqueos temporales
-            connectTimeoutMs: 60_000,  // Esperar hasta 60 segundos para la conexión
-            qrTimeout: 40_000,  // Mostrar QR durante 40 segundos antes de reintentar
+            browser: ['Control Financiero', 'Chrome', '1.0.0'],  // Perfil de escritorio
+            // ¡NO usar 'mobile: true'!
+            connectTimeoutMs: 60_000,
+            qrTimeout: 40_000,
         });
 
         sock.ev.on('connection.update', ({ qr, connection, lastDisconnect }) => {
@@ -66,10 +64,6 @@ async function startBot() {
             if (connection === 'open') {
                 console.log('✅ Conectado a WhatsApp');
                 isConnecting = false;
-                if (reconnectTimeout) {
-                    clearTimeout(reconnectTimeout);
-                    reconnectTimeout = null;
-                }
             }
 
             if (connection === 'close') {
@@ -79,9 +73,9 @@ async function startBot() {
                 if (shouldReconnect) {
                     console.log('⏳ Reintentando conexión en 5 segundos...');
                     isConnecting = false;
-                    reconnectTimeout = setTimeout(() => startBot(), 5000);
+                    setTimeout(() => startBot(), 5000);
                 } else {
-                    console.log('❌ Sesión cerrada por logout. Deberás escanear un nuevo QR.');
+                    console.log('❌ Sesión cerrada. Deberás escanear un nuevo QR.');
                     isConnecting = false;
                 }
             }
@@ -117,6 +111,6 @@ async function startBot() {
     } catch (e) {
         console.error('Error fatal en startBot:', e);
         isConnecting = false;
-        reconnectTimeout = setTimeout(() => startBot(), 10000);
+        setTimeout(() => startBot(), 10000);
     }
 }
